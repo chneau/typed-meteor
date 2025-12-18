@@ -1,3 +1,4 @@
+/// <amd-module name="@chneau/typed-meteor" />
 import { Meteor, type Subscription } from "meteor/meteor";
 import type { Mongo } from "meteor/mongo";
 import { useTracker } from "meteor/react-meteor-data";
