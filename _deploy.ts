@@ -1,6 +1,6 @@
 import { $ } from "bun";
 import z from "zod";
-import { dependencies, name } from "./package.json";
+import { name } from "./package.json";
 
 await $`rm -rf dist`;
 await $`bun build --outfile=dist/index.js --target=node --production --no-bundle index.ts`;
@@ -22,7 +22,6 @@ await Bun.write(
 		version,
 		main: "index.js",
 		types: "index.d.ts",
-		dependencies,
 	}),
 );
 await $`bun publish --access public`.cwd("dist");

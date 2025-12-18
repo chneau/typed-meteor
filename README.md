@@ -13,8 +13,7 @@ client and server.
   for both methods and publications.
 - 🤝 **Isomorphic Definitions**: Define your logic in one place. The library
   handles server-side registration and client-side consumption.
-- ⚛️ **React Ready**: `typedSubscribe` returns a hook ready to be used in your
-  React components via `useTracker`.
+- ⚛️ **React Ready**: Designed to work seamlessly with `useTracker` in React.
 - ⚡ **Lightweight**: Minimal overhead wrapper around standard Meteor APIs.
 
 ## Installation
@@ -29,79 +28,162 @@ yarn add @chneau/typed-meteor zod
 
 ## Usage
 
-### Typed Methods
+### 1. Define your API (Backend/Shared)
 
-Define a method with input and output validation.
+Define your collection, schemas, methods, and subscriptions in a shared file (or
+server-side file if you prefer, but types must be available to client).
 
 ```typescript
-import { typedMethod } from "@chneau/typed-meteor";
-import { z } from "zod";
+import { typedMethod, typedSubscribe } from "@chneau/typed-meteor";
+import z from "zod";
 
-// Define the method (shared code or server-side)
-export const addNumbers = typedMethod({
-  name: "math.add",
-  input: z.object({
-    a: z.number(),
-    b: z.number(),
-  }),
-  output: z.number(),
-  async fn({ a, b }) {
-    // This runs on the server
-    return a + b;
-  },
+const linkSchema = z.object({
+	_id: z.string().optional(),
+	title: z.string(),
+	url: z.url(),
+	createdAt: z.date(),
+	deletedAt: z.date().nullish(),
 });
 
-// Use it on the client
-// The input is type-checked against the Zod schema
-// The result is type-checked as a number
-const result = await addNumbers({ a: 5, b: 10 });
-console.log(result); // 15
+type Link = z.infer<typeof linkSchema>;
+
+export const LinksCollection = new Mongo.Collection<Link>("links");
+
+export const subscribeLinks = typedSubscribe({
+	name: "links",
+	input: z.boolean().optional(),
+	output: linkSchema.extend({ _id: z.string() }),
+	collection: LinksCollection,
+	fn: (showDeletedToo) => {
+		const query: Mongo.Query<Link> = {};
+		if (!showDeletedToo) {
+			query.$or = [{ deletedAt: { $exists: false } }, { deletedAt: null }];
+		}
+		return LinksCollection.find(query);
+	},
+});
+
+export const methodCreateLink = typedMethod({
+	name: "links.insert",
+	input: z.object({
+		title: z.string(),
+		url: z.url(),
+	}),
+	output: z.string(),
+	fn: async ({ title, url }) =>
+		await LinksCollection.insertAsync({ title, url, createdAt: new Date() }),
+});
+
+export const methodDeleteLink = typedMethod({
+	name: "links.delete",
+	input: z.string(),
+	output: z.number(),
+	fn: async (_id) => {
+		const current = await LinksCollection.findOneAsync(
+			{ _id },
+			{ fields: { deletedAt: 1 } },
+		);
+		if (current?.deletedAt) {
+			return await LinksCollection.updateAsync(
+				{ _id },
+				{ $set: { deletedAt: null } },
+			);
+		}
+		return await LinksCollection.updateAsync(
+			{ _id },
+			{ $set: { deletedAt: new Date() } },
+		);
+	},
+});
+
+export const createFor1Second = typedMethod({
+	name: "links.createFor1Second",
+	input: z.void(),
+	output: z.void(),
+	fn: async () => {
+		const _id = await methodCreateLink({
+			title: "Temporary Link",
+			url: "https://temporary-link.com",
+		});
+		await new Promise((resolve) => setTimeout(resolve, 1000));
+		await methodDeleteLink(_id);
+	},
+});
 ```
 
-### Typed Subscriptions
+### 2. Use in Frontend (React)
 
-Define a publication and consume it as a React hook.
+Use the defined methods and subscriptions in your React components.
 
-```typescript
-import { typedSubscribe } from "@chneau/typed-meteor";
-import { z } from "zod";
-import { TasksCollection } from "/imports/api/tasks"; // Your Mongo Collection
+```tsx
+import { useTracker } from "meteor/react-meteor-data";
+import { useState } from "react";
+// Import from your API file
+import {
+	createFor1Second,
+	methodCreateLink,
+	methodDeleteLink,
+	subscribeLinks,
+} from "../api/links";
 
-// Define the subscription
-export const useTasks = typedSubscribe({
-  name: "tasks.list",
-  input: z.object({
-    completed: z.boolean().optional(),
-  }),
-  // Validates documents coming from the collection
-  output: z.object({
-    _id: z.string(),
-    text: z.string(),
-    completed: z.boolean(),
-  }),
-  collection: TasksCollection,
-  fn(input) {
-    // This runs on the server (Publisher)
-    // 'input' is fully typed based on the Zod schema
-    const query =
-      input.completed !== undefined ? { completed: input.completed } : {};
-    return TasksCollection.find(query);
-  },
-});
+const SmallInfo = ({ children }: { children: React.ReactNode }) =>
+	children && (
+		<small style={{ color: "gray", fontFamily: "monospace" }}>{children}</small>
+	);
 
-// Use it in a React component
-const TaskList = () => {
-  // Automatically subscribes and fetches data
-  // 'tasks' is typed as an array of the output Zod schema
-  const tasks = useTasks({ completed: false });
-
-  return (
-    <ul>
-      {tasks.map((task) => (
-        <li key={task._id}>{task.text}</li>
-      ))}
-    </ul>
-  );
+export const Info = () => {
+	const [showDeletedToo, setShowDeletedToo] = useState(false);
+	const links = useTracker(() => subscribeLinks(showDeletedToo));
+	const [x, setX] = useState(0);
+	return (
+		<div>
+			<h2>Learn Meteor!</h2>
+			<button type="button" onClick={() => setX(x + 1)}>
+				Click Me
+			</button>
+			<p>You've pressed the button {x} times.</p>
+			<button type="button" onClick={() => setShowDeletedToo(!showDeletedToo)}>
+				{showDeletedToo ? "Showing deleted links" : "Hiding deleted links"}
+			</button>
+			<h3>Links ({links.length})</h3>
+			<ul>
+				{links.map((x) => (
+					<li key={x._id}>
+						<SmallInfo>{x._id}</SmallInfo>
+						&nbsp;
+						<a href={x.url} target="_blank">
+							{x.title}
+						</a>
+						&nbsp;
+						<SmallInfo>({x.url})</SmallInfo>
+						&nbsp;
+						<SmallInfo>{x.createdAt.toISOString()}</SmallInfo>
+						&nbsp;
+						<SmallInfo>{x.deletedAt?.toISOString()}</SmallInfo>
+						&nbsp;
+						<button
+							type="button"
+							onClick={() => methodCreateLink(x)}
+							style={{ fontSize: "0.5em" }}
+						>
+							Duplicate
+						</button>
+						&nbsp;
+						<button
+							type="button"
+							onClick={() => methodDeleteLink(x._id)}
+							style={{ fontSize: "0.5em" }}
+						>
+							Delete
+						</button>
+					</li>
+				))}
+			</ul>
+			<button type="button" onClick={() => createFor1Second()}>
+				Create for 1 second
+			</button>
+		</div>
+	);
 };
 ```
 
@@ -122,7 +204,7 @@ from the client.
 
 ### `typedSubscribe<Input, Output>(options)`
 
-Creates a type-safe Meteor publication and a corresponding React hook.
+Creates a type-safe Meteor publication helper.
 
 - **options.name**: `string` - Unique name for the publication.
 - **options.input**: `ZodSchema` (optional) - Schema for subscription arguments.
@@ -131,5 +213,6 @@ Creates a type-safe Meteor publication and a corresponding React hook.
 - **options.collection**: `Mongo.Collection` - The Mongo Collection instance.
 - **options.fn**: `(input) => void | Mongo.Cursor` - The publication function.
 
-**Returns:** A React hook `(input, deps?) => Output[]` that manages the
-subscription and returns the data.
+**Returns:** A function `(input) => Output[]` that should be called within a
+reactive context (like `useTracker`). It handles the subscription and returns
+the data from the collection.
